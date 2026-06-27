@@ -10,13 +10,17 @@ RUN ldconfig /usr/local/cuda-13.0/compat/
 
 # Install vLLM with FlashInfer - use CUDA 130 PyTorch wheels
 RUN uv pip install --system "packaging>=24.2" && \
-    uv pip install --system "vllm[flashinfer]==0.20.2" && \
+    uv pip install --system "vllm[flashinfer]==0.23.0" && \
     uv pip install --system git+https://github.com/deepseek-ai/DeepGEMM.git@714dd1a4a980f7937a74343d19a8eba4fe321480 --no-build-isolation
 
-# Install additional Python dependencies (after vLLM to avoid PyTorch version conflicts)
+# Install additional Python dependencies (after vLLM to avoid PyTorch version conflicts).
+# --excludes drops nixl-cu12 (pulled transitively by lmcache's generic `nixl` meta-package)
+# so only the CUDA-13 NIXL backend is installed, matching torch's CUDA 13 build. See
+# builder/excludes.txt for details.
 COPY builder/requirements.txt /requirements.txt
+COPY builder/excludes.txt /excludes.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system -r /requirements.txt
+    uv pip install --system --excludes /excludes.txt -r /requirements.txt
 
 # Setup for Option 2: Building the Image with the Model included
 ARG MODEL_NAME=""

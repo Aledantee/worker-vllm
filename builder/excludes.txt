@@ -1,0 +1,7 @@
+# lmcache depends on the generic `nixl` meta-package, which unconditionally installs BOTH
+# the CUDA-12 (nixl-cu12) and CUDA-13 (nixl-cu13) NIXL backends. torch in this image is
+# built for CUDA 13, so NIXL's runtime dispatcher (nixl/__init__.py) selects nixl_cu13 from
+# torch.version.cuda; the cu12 build is never used, yet its .so links libcudart.so.12 which
+# is absent on the CUDA 13 base image and breaks vLLM startup (vllm#39923, LMCache#2843).
+# Excluding it keeps a clean CUDA-13-only stack with no libcudart.so.12 symlink workaround.
+nixl-cu12
