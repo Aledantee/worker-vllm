@@ -13,20 +13,28 @@ on:
 
 permissions:
   contents: write # Required for creating GitHub releases
+  packages: write # Required for pushing images to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  # Image path under the registry. metadata-action lowercases the owner for GHCR,
+  # so a fork owner like "Aledantee" becomes ghcr.io/aledantee/worker-v1-vllm.
+  IMAGE_NAME: ${{ github.repository_owner }}/worker-v1-vllm
 
 jobs:
   release:
-    runs-on: [blacksmith-8vcpu-ubuntu-2204, linux]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Clear space to remove unused folders
+      - name: Free up disk space
         run: |
-          rm -rf /usr/share/dotnet
-          rm -rf /opt/ghc
-          rm -rf "/usr/local/share/boost"
-          rm -rf "$AGENT_TOOLSDIRECTORY"
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+            /usr/local/lib/android /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force || true
+          echo "Disk after cleanup:"; df -h /
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -34,66 +42,80 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: blacksmith docker layer cache
-        uses: useblacksmith/build-push-action@v1
-        with:
-          setup-only: true
-
-      - name: Set environment variables
+      - name: Resolve release version
+        id: version
         run: |
-          echo "DOCKERHUB_REPO=${{ vars.DOCKERHUB_REPO || 'runpod' }}" >> $GITHUB_ENV
-          echo "DOCKERHUB_IMG=${{ vars.DOCKERHUB_IMG || 'worker-v1-vllm' }}" >> $GITHUB_ENV
-          echo "HUGGINGFACE_ACCESS_TOKEN=${{ secrets.HUGGINGFACE_ACCESS_TOKEN }}" >> $GITHUB_ENV
-
-          # Determine version based on trigger type
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.version }}"
-          elif [[ "${{ github.event_name }}" == "release" ]]; then
-            VERSION="${{ github.event.release.tag_name }}"
           else
-            VERSION=${GITHUB_REF#refs/tags/}
+            VERSION="${GITHUB_REF#refs/tags/}"
           fi
-          echo "RELEASE_VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push the images to Docker Hub
-        uses: docker/bake-action@v2
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Pin to the resolved version only; metadata-action auto-adds the OCI
+          # labels (incl. org.opencontainers.image.source, which links the package
+          # to this repository).
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+          flavor: latest=false
+          labels: |
+            org.opencontainers.image.title=worker-v1-vllm
+            org.opencontainers.image.description=Runpod Serverless vLLM worker
+
+      - name: Build and push to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
           push: true
-          set: |
-            *.args.DOCKERHUB_REPO=${{ env.DOCKERHUB_REPO }}
-            *.args.DOCKERHUB_IMG=${{ env.DOCKERHUB_IMG }}
-            *.args.RELEASE_VERSION=${{ env.RELEASE_VERSION }}
-            *.args.HUGGINGFACE_ACCESS_TOKEN=${{ env.HUGGINGFACE_ACCESS_TOKEN }}
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Release Summary
+      - name: Release summary
         run: |
-          echo "Release completed!"
-          echo "Version: ${{ env.RELEASE_VERSION }}"
-          echo "Docker Image: ${{ env.DOCKERHUB_REPO }}/${{ env.DOCKERHUB_IMG }}:${{ env.RELEASE_VERSION }}"
+          echo "Released ${{ steps.version.outputs.version }}"
+          echo "Image(s):"
+          echo "${{ steps.meta.outputs.tags }}"
 
-      - name: Fetch Release Notes
+      - name: Fetch release notes
         run: |
           RESPONSE=$(curl -sf \
             -H "Authorization: token ${{ github.token }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.RELEASE_VERSION }}" 2>/dev/null) || true
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.version.outputs.version }}" 2>/dev/null) || true
           if [[ -n "$RESPONSE" ]]; then
             NOTES=$(echo "$RESPONSE" | jq -r '.body // empty')
           fi
           printf '%s' "${NOTES:-No release notes available.}" > /tmp/release_notes.txt
 
       - name: Notify Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "SLACK_WEBHOOK_URL not set; skipping Slack notification."
+            exit 0
+          fi
           jq -n \
-            --arg version "${{ env.RELEASE_VERSION }}" \
-            --arg docker "${{ env.DOCKERHUB_REPO }}/${{ env.DOCKERHUB_IMG }}:${{ env.RELEASE_VERSION }}" \
+            --arg version "${{ steps.version.outputs.version }}" \
+            --arg docker "${{ fromJSON(steps.meta.outputs.json).tags[0] }}" \
             --rawfile notes /tmp/release_notes.txt \
-            --arg url "https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_VERSION }}" \
+            --arg url "https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}" \
             '{
               text: (":rocket: New :runpod-new-whiteonpurple: Runpod worker-vllm release: *" + $version + "*"),
               blocks: [
@@ -112,6 +134,6 @@ jobs:
                   }
                 }
               ]
-            }' | curl -sf -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            }' | curl -sf -X POST "$SLACK_WEBHOOK_URL" \
               -H "Content-Type: application/json" \
               -d @-

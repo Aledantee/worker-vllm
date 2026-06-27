@@ -175,14 +175,14 @@ src/
 
 #### CI/CD Strategy:
 
-- **Development Builds**: All non-main branches → `runpod/worker-v1-vllm:dev-<branch-name>`
-- **Release Builds**: Git tags (numeric) only → `runpod/worker-v1-vllm:<version>`
+- **Development Builds**: Pull requests → `ghcr.io/<owner>/worker-v1-vllm:dev-pr-<number>`
+- **Release Builds**: Git tags (`v[0-9]+.[0-9]+.[0-9]+*`) → `ghcr.io/<owner>/worker-v1-vllm:<version>`
 - **Dependency Updates**: Automated runpod package version monitoring
 
-#### Docker Bake Configuration:
+#### Build Configuration:
 
-- **File**: `docker-bake.hcl` (flexible variable-based configuration)
-- **Variables**: `DOCKERHUB_REPO`, `DOCKERHUB_IMG`, `RELEASE_VERSION`, `HUGGINGFACE_ACCESS_TOKEN`
+- **Registry**: GitHub Container Registry (`ghcr.io`), authenticated with the workflow `GITHUB_TOKEN`
+- **Actions**: `docker/metadata-action` (tags + OCI labels) → `docker/build-push-action` (GHA layer cache)
 - **Platform**: `linux/amd64` (GPU-optimized)
 
 ## Release & Versioning Strategy
@@ -198,7 +198,7 @@ src/
 1. **Feature Development**: Work on feature branches → triggers dev builds
 2. **Main Branch Staging**: Merge features to main → stable codebase (no builds)
 3. **Version Release**: Create git tag from main branch (e.g., `2.8.0`) → triggers versioned release + GitHub release
-4. **Docker Hub**: Versioned image pushed with tag
+4. **GHCR**: Versioned image pushed to `ghcr.io/<owner>/worker-v1-vllm` with the version tag
 
 ### 3. **Branch Strategy**
 
@@ -243,9 +243,9 @@ src/
 
 ### 2. **Docker Development**
 
-- **Build Strategy**: `docker-bake.hcl` for consistent builds
+- **Build Strategy**: `docker/build-push-action` driven by the GitHub Actions workflows
 - **Testing Images**: Separate dev/stable image tags
-- **Layer Caching**: Optimized for rapid iteration
+- **Layer Caching**: GitHub Actions cache (`type=gha`) for rapid iteration
 
 ### 3. **Configuration Validation**
 
