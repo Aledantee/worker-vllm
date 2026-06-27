@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write # Required for creating GitHub releases
+  contents: read # Checkout only
   packages: write # Required for pushing images to GHCR
 
 env:
@@ -92,48 +92,3 @@ jobs:
           echo "Released ${{ steps.version.outputs.version }}"
           echo "Image(s):"
           echo "${{ steps.meta.outputs.tags }}"
-
-      - name: Fetch release notes
-        run: |
-          RESPONSE=$(curl -sf \
-            -H "Authorization: token ${{ github.token }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.version.outputs.version }}" 2>/dev/null) || true
-          if [[ -n "$RESPONSE" ]]; then
-            NOTES=$(echo "$RESPONSE" | jq -r '.body // empty')
-          fi
-          printf '%s' "${NOTES:-No release notes available.}" > /tmp/release_notes.txt
-
-      - name: Notify Slack
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
-            echo "SLACK_WEBHOOK_URL not set; skipping Slack notification."
-            exit 0
-          fi
-          jq -n \
-            --arg version "${{ steps.version.outputs.version }}" \
-            --arg docker "${{ fromJSON(steps.meta.outputs.json).tags[0] }}" \
-            --rawfile notes /tmp/release_notes.txt \
-            --arg url "https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}" \
-            '{
-              text: (":rocket: New :runpod-new-whiteonpurple: Runpod worker-vllm release: *" + $version + "*"),
-              blocks: [
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: (":banana-dance: *New Release — worker-vllm " + $version + "*\n*Docker:* `" + $docker + "`\n<" + $url + "|View release on GitHub>")
-                  }
-                },
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: ("*Release Notes:*\n" + $notes)
-                  }
-                }
-              ]
-            }' | curl -sf -X POST "$SLACK_WEBHOOK_URL" \
-              -H "Content-Type: application/json" \
-              -d @-
