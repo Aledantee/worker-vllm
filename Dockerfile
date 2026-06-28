@@ -12,7 +12,15 @@ ENV PATH="/root/.local/bin:$PATH"
 
 RUN ldconfig /usr/local/cuda-12.9/compat/
 
-# Install vLLM with FlashInfer - CUDA 12.9 wheels (vLLM 0.23.0's default build)
+# vLLM 0.23.0's own wheel is compiled for CUDA 12.9, but `torch` is resolved from PyPI, whose
+# default wheel is now CUDA 13.0 (cu130) — which needs NVIDIA driver r580+ (see above) and so
+# crashes on RunPod's 12.9-driver hosts at engine init with "NVIDIA driver is too old (found
+# version 12090)". UV_TORCH_BACKEND pins torch (and the torchvision/triton family) to the cu129
+# index for every uv install below. The builder has no GPU to auto-detect against, so the backend
+# is set explicitly rather than =auto.
+ENV UV_TORCH_BACKEND=cu129
+
+# Install vLLM with FlashInfer (vLLM 0.23.0's CUDA 12.9 wheel; torch pinned to cu129 above)
 RUN uv pip install --system "packaging>=24.2" && \
     uv pip install --system "vllm[flashinfer]==0.23.0" && \
     uv pip install --system git+https://github.com/deepseek-ai/DeepGEMM.git@714dd1a4a980f7937a74343d19a8eba4fe321480 --no-build-isolation
