@@ -12,17 +12,27 @@ ENV PATH="/root/.local/bin:$PATH"
 
 RUN ldconfig /usr/local/cuda-12.9/compat/
 
-# vLLM 0.23.0's own wheel is compiled for CUDA 12.9, but `torch` is resolved from PyPI, whose
-# default wheel is now CUDA 13.0 (cu130) — which needs NVIDIA driver r580+ (see above) and so
-# crashes on RunPod's 12.9-driver hosts at engine init with "NVIDIA driver is too old (found
-# version 12090)". UV_TORCH_BACKEND pins torch (and the torchvision/triton family) to the cu129
-# index for every uv install below. The builder has no GPU to auto-detect against, so the backend
-# is set explicitly rather than =auto.
+# --- CUDA 12.9 pin: BOTH torch AND vLLM default to CUDA 13 and must each be pulled to 12.9 ---
+# RunPod's hosts run NVIDIA driver 12090 (CUDA 12.9); the CUDA-13 stack needs driver r580+,
+# which they lack. The previous fix only pinned torch and wrongly assumed vLLM's wheel was
+# already cu129 — it is not, so the worker still crashed. Both artifacts need the 12.9 build:
+#
+#  1. torch — PyPI's default torch is now cu130. UV_TORCH_BACKEND=cu129 pins torch and the
+#     torchvision/torchaudio/triton family to the cu129 index for every uv install below.
+#     The builder has no GPU to auto-detect against, so the backend is set explicitly, not =auto.
+#
+#  2. vLLM — `vllm==0.23.0` on PyPI is the CUDA-13 build: its vllm/_C.abi3.so has
+#     `NEEDED libcudart.so.13`, so under cu129 torch (which ships libcudart.so.12) the first
+#     `import vllm._C` dies with "libcudart.so.13: cannot open shared object file". vLLM
+#     publishes a matching cu129 wheel, but only as a GitHub release asset (not on PyPI), so it
+#     is installed by URL. Verified with `objdump -p`: this wheel's _C.abi3.so has
+#     `NEEDED libcudart.so.12`, which nvidia-cuda-runtime-cu12 (pulled by torch cu129) provides.
+#     The wheel is amd64-only, matching the linux/amd64 image build (.github/workflows).
 ENV UV_TORCH_BACKEND=cu129
+ARG VLLM_WHEEL="https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
 
-# Install vLLM with FlashInfer (vLLM 0.23.0's CUDA 12.9 wheel; torch pinned to cu129 above)
 RUN uv pip install --system "packaging>=24.2" && \
-    uv pip install --system "vllm[flashinfer]==0.23.0" && \
+    uv pip install --system "vllm[flashinfer] @ ${VLLM_WHEEL}" && \
     uv pip install --system git+https://github.com/deepseek-ai/DeepGEMM.git@714dd1a4a980f7937a74343d19a8eba4fe321480 --no-build-isolation
 
 # Install additional Python dependencies (after vLLM to avoid PyTorch version conflicts).
